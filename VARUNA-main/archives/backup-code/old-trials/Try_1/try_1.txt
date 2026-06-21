@@ -1,0 +1,186 @@
+import cv2
+import asyncio
+import uvicorn
+from collections import deque, Counter
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from ultralytics import YOLO
+from twilio.rest import Client
+
+# ---  CONFIGURATION (EDIT THESE) ---
+
+# 1. CAMERA & AI SETUP
+MOBILE_CAMERA_URL = "http://192.168.0.3:8080/video"  # <<<< CHANGE THIS to your Phone IP
+MODEL_NAME = 'accident_v1.pt'                        # Your trained model file
+
+# 2. TWILIO SMS SETUP (Get these from Twilio.com)
+TWILIO_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"       # <<<< CHANGE THIS
+TWILIO_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"      # <<<< CHANGE THIS
+TWILIO_FROM = "+15551234567"                         # <<<< CHANGE THIS
+TWILIO_TO_POLICE = "+919999999999"                   # <<<< CHANGE THIS (Your real mobile)
+
+# -------------------------------------
+
+# --- HELPER: STABILIZER CLASS ---
+# prevents alerts from flickering on/off rapidly
+class Stabilizer:
+    def __init__(self, history_length=15):
+        self.history = deque(maxlen=history_length) 
+
+    def add(self, status):
+        self.history.append(status)
+        vote_counts = Counter(self.history)
+        winner, count = vote_counts.most_common(1)[0]
+        return winner
+
+# Create a stabilizer instance
+status_stabilizer = Stabilizer(history_length=10)
+
+
+# --- SMS FUNCTION ---
+def send_sms_alert(level, message):
+    """Sends an SMS if Twilio keys are set."""
+    if TWILIO_SID.startswith("AC") and "xxxx" not in TWILIO_SID:
+        try:
+            client = Client(TWILIO_SID, TWILIO_TOKEN)
+            sms_body = f"🚨 SIH ALERT: Level {level} Incident!\nCam: 01\nMsg: {message}\nAction: Dispatching Units."
+            msg = client.messages.create(body=sms_body, from_=TWILIO_FROM, to=TWILIO_TO_POLICE)
+            print(f"✅ SMS SENT! ID: {msg.sid}")
+        except Exception as e:
+            print(f"❌ SMS Failed: {e}")
+    else:
+        # Skip printing error every frame if keys aren't set
+        pass
+
+
+# --- LOGIC ENGINE ---
+def analyze_detections(results, model_names):
+    detected_objects = []
+    for r in results:
+        for box in r.boxes:
+            class_id = int(box.cls[0])
+            name = model_names[class_id]
+            detected_objects.append(name)
+            
+    # Determine Raw Status for this single frame
+    raw_status = "Normal"
+    
+    # Priority 1: Fire/Smoke
+    if any(x in ['fire', 'smoke'] for x in detected_objects):
+        raw_status = "Fire"
+    # Priority 2: Severe Accident
+    elif any(x in ['severe_accident', 'accident', 'crash'] for x in detected_objects):
+        raw_status = "Accident"
+    # Priority 3: Minor Accident
+    elif 'minor_accident' in detected_objects:
+        raw_status = "Minor"
+
+    # Stabilize the reading (Majority Vote over last 10 frames)
+    stable_status = status_stabilizer.add(raw_status)
+
+    # Generate Alert based on STABLE status
+    if stable_status == "Fire":
+        send_sms_alert(3, "Fire/Smoke Detected")
+        return {
+            "level": 3,
+            "title": "🔥 CATASTROPHIC EVENT",
+            "message": "Fire Detected. Green Corridor Activated.",
+            "color": "darkred",
+            "corridor": True,
+            "route": "Sector 4 -> City Hospital"
+        }
+
+    if stable_status == "Accident":
+        send_sms_alert(2, "Accident Detected")
+        return {
+            "level": 2,
+            "title": "🚗 SERIOUS ACCIDENT",
+            "message": "Collision Detected. Corridor Activated.",
+            "color": "red",
+            "corridor": True,
+            "route": "Sector 4 -> City Hospital"
+        }
+    
+    if stable_status == "Minor":
+        return {
+            "level": 1,
+            "title": "⚠️ MINOR ACCIDENT",
+            "message": "Minor collision. Caution advised.",
+            "color": "orange",
+            "corridor": False,
+            "route": "N/A"
+        }
+
+    # Traffic Jam Check (Separate from stability)
+    if detected_objects.count('car') > 4:
+        return {
+            "level": 1,
+            "title": "⚠️ TRAFFIC CONGESTION",
+            "message": "High traffic density. Rerouting.",
+            "color": "orange",
+            "corridor": False,
+            "route": "N/A"
+        }
+
+    # DEFAULT
+    return { "level": 0, "title": "✅ STATUS NORMAL", "message": "Monitoring...", "color": "green", "corridor": False }
+
+
+# --- SERVER SETUP ---
+app = FastAPI()
+
+print(f"🧠 Loading AI Brain: {MODEL_NAME}...")
+try:
+    model = YOLO(MODEL_NAME)
+    print(f"✅ Brain Loaded! Classes: {model.names}")
+except Exception as e:
+    print(f"❌ Error Loading Model: {e}")
+    print("Using 'yolov8n.pt' as backup...")
+    model = YOLO('yolov8n.pt')
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    print("📲 Dashboard Connected!")
+    
+    cap = cv2.VideoCapture(MOBILE_CAMERA_URL)
+    frame_count = 0 
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("❌ Stream Lost. Reconnecting...")
+                await asyncio.sleep(2)
+                cap = cv2.VideoCapture(MOBILE_CAMERA_URL)
+                continue
+
+            # --- OPTIMIZATION: FRAME SKIPPING ---
+            frame_count += 1
+            if frame_count % 5 != 0:
+                await asyncio.sleep(0.01) 
+                continue 
+
+            # Resize for speed
+            frame = cv2.resize(frame, (640, 480))
+
+            # 1. AI DETECTS
+            results = model(frame, conf=0.4, verbose=False)
+            
+            # 2. LOGIC DECIDES
+            alert_data = analyze_detections(results, model.names)
+
+            # 3. SEND TO DASHBOARD
+            await websocket.send_json(alert_data)
+                
+            await asyncio.sleep(0.01)
+
+    except WebSocketDisconnect:
+        print("⚠️ Dashboard Disconnected.")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,0 +1,354 @@
+/* ===================================================================================
+// App.css: Main Stylesheet for the Command Center Dashboard
+//
+// This file defines the visual appearance, layout, and animations for the dashboard.
+// It uses a dark, "hacker" theme with CSS variables for easy color management.
+// =================================================================================== */
+
+/* --- THEME COLORS --- */
+/* We define our color palette here as CSS variables for easy reuse and theming. */
+:root {
+    --bg: #050505; /* The main, darkest background color */
+    --panel: #0a0a0a; /* The background for all panel sections */
+    --panel-border: #333; /* The border color for panels and dividers */
+    --accent: #00ff00; /* Bright "hacker" green for highlights and logs */
+    --accent-blue: #00e5ff; /* A bright cyan for secondary highlights */
+    --danger: #ff3333; /* A strong red for critical alerts and buttons */
+}
+
+/* --- GLOBAL & RESET STYLES --- */
+/* A common reset to make layout math more intuitive. */
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+body {
+    background: var(--bg);
+    color: #e0e0e0;
+    /* A clean, modern font stack. */
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    overflow: hidden; /* Lock the main body scrollbar to prevent accidental scrolling. */
+}
+
+/* --- MAIN LAYOUT --- */
+/* The top-level container uses flexbox to stack the header and main content vertically. */
+.dashboard-container {
+    height: 100vh; /* Make the dashboard fill the entire screen height. */
+    display: flex;
+    flex-direction: column;
+    transition: background-color 0.5s ease; /* Smoothly fade the background color on alert. */
+}
+
+.header {
+    background: #111;
+    padding: 0 20px;
+    height: 60px;
+    border-bottom: 1px solid var(--panel-border);
+    display: flex;
+    justify-content: space-between; /* Pushes title to the left and badges to the right. */
+    align-items: center;
+}
+
+.header-title {
+    display: flex;
+    align-items: center;
+}
+
+h1 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+
+.subtitle {
+    font-size: 0.7rem;
+    color: #666;
+}
+
+.badges {
+    display: flex;
+    gap: 10px; /* Adds space between the badges. */
+    align-items: center;
+}
+
+.status-badge, .conf-badge, .corridor-badge {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: bold;
+}
+
+.status-badge {
+    background: #222;
+    border: 1px solid #444;
+}
+.conf-badge {
+    background: rgba(0, 229, 255, 0.1);
+    border: 1px solid var(--accent-blue);
+    color: var(--accent-blue);
+}
+.corridor-badge {
+    background: rgba(0, 255, 0, 0.1);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    animation: pulse 1.5s infinite; /* A subtle pulse to draw attention. */
+}
+
+/* The main area is a horizontal flex container for the three panels. */
+.main-content {
+    display: flex;
+    flex: 1; /* Takes up all available vertical space. */
+    padding: 10px;
+    gap: 10px;
+    height: calc(100vh - 60px); /* Fill the screen minus the header height. */
+}
+
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column; /* Stack the header and content within each panel. */
+    overflow: hidden; /* Prevent content from spilling out of the rounded corners. */
+}
+
+.panel-header {
+    background: #151515;
+    padding: 10px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    border-bottom: 1px solid var(--panel-border);
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Use flexbox `flex` property to define the relative widths of the panels. */
+.left-panel { flex: 3; }
+.center-panel { flex: 5; } /* The center panel is the largest. */
+.right-panel { flex: 2; }
+
+/* --- LEFT PANEL: VIDEO & STATS --- */
+.video-wrapper {
+    flex: 1; /* Allow the video to take up the available space. */
+    background: #000;
+    position: relative; /* Needed for the absolute positioning of the overlay. */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.camera-feed {
+    width: 100%;
+    height: 100%;
+    object-fit: contain; /* Scales the video to fit without stretching/cropping it. */
+}
+
+/* The flashing border that appears over the video during an incident. */
+.detection-overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    border: 4px solid transparent; /* Starts transparent. */
+    z-index: 10;
+    pointer-events: none; /* Allows clicking through the overlay to the elements behind it. */
+}
+.detection-overlay.critical { animation: flashRed 1s infinite; }
+.detection-overlay.ambulance { animation: flashBlue 1s infinite; }
+
+
+.stats-box {
+    padding: 15px;
+    background: #111;
+    border-top: 1px solid var(--panel-border);
+}
+.stat-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 0.8rem;
+}
+.stat-row span:first-child { /* The lane name (e.g., "NORTH") */
+    width: 60px;
+    color: #aaa;
+}
+.bar-container {
+    flex: 1; /* The bar container will fill the available space. */
+    background: #222;
+    height: 8px;
+    border-radius: 4px;
+    margin: 0 10px;
+    overflow: hidden;
+}
+.bar {
+    height: 100%;
+    /* Smooth transitions for width and color changes. */
+    transition: width 0.3s ease, background-color 0.3s;
+}
+
+/* --- CENTER PANEL: MAP & EVIDENCE --- */
+.map-wrapper {
+    width: 100%;
+    height: 100%; /* The map needs an explicit height to render. */
+    position: relative;
+}
+.leaflet-container {
+    background: var(--panel) !important; /* Force Leaflet's background to match our theme. */
+}
+.route-overlay {
+    position: absolute;
+    top: 10px; right: 10px;
+    background: rgba(0,0,0,0.7);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 10px;
+    border-radius: 4px;
+    z-index: 1000; /* Ensure it's on top of the map controls. */
+}
+
+.evidence-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    padding: 20px;
+}
+.evidence-img {
+    max-width: 90%;
+    max-height: 70%; /* Limit image size to fit in the panel. */
+    border: 2px solid var(--accent);
+}
+.evidence-tag {
+    margin-top: 15px;
+    color: var(--accent);
+    font-family: monospace;
+    font-size: 1.2rem;
+}
+
+/* --- RIGHT PANEL: LOGS & CONTROLS --- */
+.alert-card {
+    margin: 10px;
+    padding: 15px;
+    border-left: 4px solid #333;
+    background: #111;
+    transition: all 0.3s ease;
+}
+.alert-card h2 { margin: 0 0 5px 0; }
+.alert-card p { margin: 0; color: #bbb; }
+
+.action-log {
+    flex: 1; /* This makes the log container fill the available space in the panel. */
+    background: #000;
+    border: 1px solid #222;
+    margin: 0 10px 10px 10px; /* Margin on all sides except the top */
+    padding: 10px;
+    font-family: 'Courier New', Courier, monospace; /* Classic terminal font */
+    font-size: 0.75rem;
+    color: var(--accent); /* Green text */
+    overflow-y: auto; /* Show a scrollbar if content overflows. */
+    display: flex;
+    /* This is the magic trick: it reverses the order of items, so new logs
+       (which are added to the start of the array in JS) appear at the bottom. */
+    flex-direction: column-reverse;
+}
+
+/* A subtle, dark scrollbar for the log panel. */
+.action-log::-webkit-scrollbar { width: 6px; }
+.action-log::-webkit-scrollbar-track { background: #000; }
+.action-log::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+.action-log::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+.log-entry {
+    border-bottom: 1px solid #1a1a1a;
+    padding: 4px 0;
+    word-break: break-all;
+}
+/* Highlight the newest log entry to make it stand out. */
+.log-entry:first-child {
+    color: #fff;
+    font-weight: bold;
+}
+
+.manual-controls {
+    padding: 10px;
+    background: #111;
+    border-top: 1px solid var(--panel-border);
+}
+.control-group { margin-bottom: 8px; }
+.control-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    margin-bottom: 4px;
+    color: #888;
+}
+/* Style the range input sliders. */
+input[type=range] {
+    width: 100%;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.signal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr; /* A 2x2 grid for the lights. */
+    gap: 5px;
+    margin: 15px 0;
+}
+.signal-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #222;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+.light {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    border: 1px solid #555;
+    transition: all 0.2s ease;
+}
+.light.green {
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent); /* Add a glow effect. */
+    border-color: #fff;
+}
+.light.red {
+    background: var(--danger);
+    box-shadow: 0 0 5px var(--danger);
+}
+
+.btn {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    margin-top: 5px;
+    color: white;
+    text-transform: uppercase;
+}
+.btn.blue { background: #0055aa; }
+.btn.blue:hover { background: #0066cc; }
+.btn.red { background: var(--danger); }
+.btn.red:hover { background: #ff4444; }
+
+
+/* --- ANIMATIONS --- */
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(0.98); }
+}
+@keyframes flashRed {
+    0%, 100% { border-color: var(--danger); }
+    50% { border-color: transparent; }
+}
+@keyframes flashBlue {
+    0%, 100% { border-color: var(--accent-blue); }
+    50% { border-color: transparent; }
+}

@@ -1,0 +1,146 @@
+import cv2
+import asyncio
+import uvicorn
+import base64
+import time
+from collections import deque, Counter
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from ultralytics import YOLO
+from twilio.rest import Client
+
+# ---  CONFIGURATION ---
+MOBILE_CAMERA_URL = "http://192.168.0.3:8080/video"  # <<<< UPDATE THIS IP
+MODEL_NAME = 'accident_v1.pt'
+
+# TWILIO (Keep your keys here)
+TWILIO_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+TWILIO_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+TWILIO_FROM = "+15551234567"
+TWILIO_TO_POLICE = "+919999999999"
+
+# --- HELPER: STABILIZER ---
+class Stabilizer:
+    def __init__(self, history_length=10):
+        self.history = deque(maxlen=history_length) 
+    def add(self, status):
+        self.history.append(status)
+        return Counter(self.history).most_common(1)[0][0]
+
+status_stabilizer = Stabilizer(history_length=10)
+last_snapshot_time = 0 # For cooldown
+
+# --- HELPER: IMAGE TO TEXT (BASE64) ---
+def encode_frame(frame):
+    _, buffer = cv2.imencode('.jpg', frame)
+    return base64.b64encode(buffer).decode('utf-8')
+
+# --- LOGIC ENGINE ---
+def analyze_detections(results, model_names, frame):
+    global last_snapshot_time
+    
+    detected_objects = []
+    max_conf = 0.0
+    
+    # Analyze results and draw boxes ON THE SNAPSHOT ONLY
+    snapshot_frame = frame.copy()
+    
+    for r in results:
+        for box in r.boxes:
+            class_id = int(box.cls[0])
+            name = model_names[class_id]
+            conf = float(box.conf[0])
+            detected_objects.append(name)
+            if conf > max_conf: max_conf = conf
+            
+            # Draw box for the snapshot evidence
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            color = (0, 0, 255) if "accident" in name or "fire" in name else (0, 255, 255)
+            cv2.rectangle(snapshot_frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(snapshot_frame, f"{name} {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    # Raw Status Logic
+    raw_status = "Normal"
+    if any(x in ['fire', 'smoke'] for x in detected_objects): raw_status = "Fire"
+    elif any(x in ['severe_accident', 'accident'] for x in detected_objects): raw_status = "Accident"
+    elif 'minor_accident' in detected_objects: raw_status = "Minor"
+
+    stable_status = status_stabilizer.add(raw_status)
+    
+    # Prepare Evidence Snapshot (Only if alert and cooldown passed)
+    snapshot_data = None
+    current_time = time.time()
+    if stable_status != "Normal" and (current_time - last_snapshot_time > 5):
+        snapshot_data = encode_frame(snapshot_frame)
+        last_snapshot_time = current_time
+
+    # Construct Payload
+    alert_payload = {
+        "level": 0,
+        "title": "✅ SYSTEM NORMAL",
+        "message": "Scanning traffic flow...",
+        "color": "#4caf50",
+        "corridor": False,
+        "confidence": f"{int(max_conf * 100)}%",
+        "snapshot": snapshot_data # Sends the image to frontend
+    }
+
+    if stable_status == "Fire":
+        alert_payload.update({
+            "level": 3, "title": "🔥 FIRE DETECTED", "message": "Thermal Anomaly. Auto-Dispatching Fire Dept.", 
+            "color": "darkred", "corridor": True, "route": "Sector 4 -> City Hospital"
+        })
+    elif stable_status == "Accident":
+        alert_payload.update({
+            "level": 2, "title": "🚗 SEVERE CRASH", "message": "Impact Detected. Auto-Dispatching Ambulance.", 
+            "color": "red", "corridor": True, "route": "Sector 4 -> City Hospital"
+        })
+    elif stable_status == "Minor":
+        alert_payload.update({
+            "level": 1, "title": "⚠️ MINOR ACCIDENT", "message": "Minor collision. Logging evidence.", 
+            "color": "orange", "corridor": False, "route": "N/A"
+        })
+    
+    return alert_payload
+
+# --- SERVER SETUP ---
+app = FastAPI()
+try:
+    model = YOLO(MODEL_NAME)
+except:
+    model = YOLO('yolov8n.pt')
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    cap = cv2.VideoCapture(MOBILE_CAMERA_URL)
+    frame_count = 0
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                await asyncio.sleep(2)
+                cap = cv2.VideoCapture(MOBILE_CAMERA_URL)
+                continue
+
+            frame_count += 1
+            if frame_count % 5 != 0:
+                await asyncio.sleep(0.01)
+                continue 
+
+            frame = cv2.resize(frame, (640, 480))
+            results = model(frame, conf=0.4, verbose=False)
+            
+            # PASS FRAME to logic so we can take a picture
+            alert_data = analyze_detections(results, model.names, frame)
+            
+            await websocket.send_json(alert_data)
+            await asyncio.sleep(0.01)
+
+    except WebSocketDisconnect:
+        print("Disconnected")
+    finally:
+        cap.release()
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

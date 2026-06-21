@@ -1,0 +1,34 @@
+# Environment
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+
+# Node
+node_modules/
+dashboard/build/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Model files (large binaries)
+backend/models/*.pt
+
+# Evidence archive (runtime data)
+data/evidence_archive/
+evidence_archive/
+
+# OS
+.DS_Store
+desktop.ini

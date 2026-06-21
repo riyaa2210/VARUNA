@@ -1,0 +1,126 @@
+/* DARK MODE THEME */
+:root {
+    --bg: #050505;
+    --panel: #0a0a0a;
+    --panel-border: #333;
+    --accent: #00ff00;       /* Hacker Green */
+    --accent-blue: #00e5ff;  /* Cyber Blue */
+    --danger: #ff3333;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body { 
+    background: var(--bg);
+    color: #e0e0e0; 
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+    margin: 0; 
+    overflow: hidden; 
+}
+
+.dashboard-container { 
+    height: 100vh; 
+    display: flex; 
+    flex-direction: column; 
+    transition: background-color 0.5s ease;
+}
+
+/* HEADER */
+.header { 
+    background: #111; 
+    padding: 0 20px; 
+    height: 60px;
+    border-bottom: 1px solid var(--panel-border); 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; 
+}
+
+.badges { display: flex; gap: 10px; align-items: center; }
+
+.status-badge { background: #222; border: 1px solid #444; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
+.conf-badge { background: rgba(0, 229, 255, 0.1); border: 1px solid var(--accent-blue); color: var(--accent-blue); padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
+.corridor-badge { background: rgba(0, 255, 0, 0.1); border: 1px solid var(--accent); color: var(--accent); padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; animation: pulse 1s infinite; }
+
+/* LAYOUT */
+.main-content { display: flex; flex: 1; padding: 10px; gap: 10px; height: calc(100vh - 60px); }
+.panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px; display: flex; flex-direction: column; overflow: hidden; }
+.panel-header { background: #151515; padding: 10px; font-size: 0.85rem; font-weight: 700; border-bottom: 1px solid var(--panel-border); color: #888; text-transform: uppercase; letter-spacing: 1px; }
+
+.left-panel { flex: 3; }
+.center-panel { flex: 5; }
+.right-panel { flex: 2; }
+
+/* VIDEO FEED */
+.video-wrapper { flex: 1; background: #000; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.camera-feed { width: 100%; height: 100%; object-fit: contain; }
+.detection-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 4px solid transparent; z-index: 10; pointer-events: none; }
+.detection-overlay.critical { animation: flashRed 1s infinite; }
+.detection-overlay.ambulance { animation: flashBlue 1s infinite; }
+
+/* STATS BOX */
+.stats-box { padding: 15px; background: #111; border-top: 1px solid var(--panel-border); max-height: 40%; overflow-y: auto; }
+.stat-row { display: flex; align-items: center; margin-bottom: 8px; font-size: 0.8rem; }
+.stat-row span:first-child { width: 60px; color: #aaa; }
+.bar-container { flex: 1; background: #222; height: 8px; border-radius: 4px; margin: 0 10px; overflow: hidden; }
+.bar { height: 100%; transition: width 0.3s ease, background-color 0.3s; }
+
+/* MAP */
+.map-wrapper { width: 100%; height: 100%; position: relative; }
+.leaflet-container { background: #0a0a0a !important; width: 100%; height: 100%; }
+.route-overlay { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.8); border: 1px solid var(--accent); color: var(--accent); padding: 10px; border-radius: 4px; z-index: 1000; }
+
+/* EVIDENCE VIEWER */
+.evidence-container { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #000; }
+.evidence-img { max-width: 90%; max-height: 50vh; border: 2px solid var(--accent); }
+.evidence-tag { margin-top: 15px; color: var(--accent); font-family: monospace; font-size: 1.2rem; }
+
+/* LOGS */
+.alert-card { margin: 10px; padding: 15px; border-left: 4px solid #333; background: #111; transition: all 0.3s ease; }
+.alert-card h2 { margin: 0 0 5px 0; font-size: 1rem; }
+.action-log { flex: 1; background: #000; border: 1px solid #222; margin: 0 10px 10px 10px; padding: 10px; font-family: 'Courier New', Courier, monospace; font-size: 0.75rem; color: var(--accent); overflow-y: auto; display: flex; flex-direction: column-reverse; }
+.action-log::-webkit-scrollbar { width: 6px; }
+.action-log::-webkit-scrollbar-track { background: #000; }
+.action-log::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+.log-entry { border-bottom: 1px solid #1a1a1a; padding: 4px 0; word-break: break-all; }
+.log-entry:first-child { color: #fff; font-weight: bold; }
+
+/* CONTROLS */
+.manual-controls { padding: 10px; background: #111; border-top: 1px solid #333; }
+.control-group { margin-bottom: 8px; }
+
+.control-group button {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.control-group button:hover {
+    transform: scale(1.05);
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.3);
+}
+.control-label { display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 4px; color: #888; }
+input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+
+/* DYNAMIC SIGNAL GRID */
+.signal-grid { display: grid; gap: 5px; margin: 15px 0; }
+.signal-row { display: flex; justify-content: space-between; align-items: center; background: #222; padding: 5px 10px; border-radius: 4px; font-size: 0.8rem; }
+.light { width: 12px; height: 12px; border-radius: 50%; border: 1px solid #555; background: #440000; transition: all 0.2s ease; }
+.light.green { background: var(--accent); box-shadow: 0 0 8px var(--accent); border-color: #fff; }
+.light.red { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
+
+.btn { width: 100%; padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 5px; color: white; text-transform: uppercase; transition: all 0.2s; }
+.blue { background: #0055aa; } .blue:hover { background: #0066cc; }
+.red { background: var(--danger); } .red:hover { background: #ff4444; }
+
+/* ANIMATIONS */
+@keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(0.98); } }
+@keyframes flashRed { 0%, 100% { border-color: var(--danger); } 50% { border-color: transparent; } }
+@keyframes flashBlue { 0%, 100% { border-color: var(--accent-blue); } 50% { border-color: transparent; } }
+
+/* LIVE TIMER PULSE */
+@keyframes timerPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.timer-urgent {
+    animation: timerPulse 0.5s infinite;
+}
