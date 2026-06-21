@@ -24,6 +24,12 @@ dashboard/build/
 
 # Model files (large binaries)
 backend/models/*.pt
+*.pt
+
+# Large video files
+*.mp4
+*.avi
+*.mov
 
 # Evidence archive (runtime data)
 data/evidence_archive/
