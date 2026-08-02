@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import './App.css';
+import AnalyticsTab from './AnalyticsTab';
 
 // --- CONFIGURATION ---
 // Use frame from WebSocket instead
@@ -58,6 +59,7 @@ function App() {
     // --- STATE ---
     const [alert, setAlert] = useState(null);
     const [connectionStatus, setConnectionStatus] = useState("Disconnected");
+    const [activeTab, setActiveTab] = useState('live'); // 'live' | 'analytics'
     
     // Data States
     const [cameraLocation, setCameraLocation] = useState(null); 
@@ -71,6 +73,7 @@ function App() {
     const [signals, setSignals] = useState({ north: 'red', east: 'red', south: 'red', west: 'red' });
     const [algorithmInfo, setAlgorithmInfo] = useState({ active: 'Initializing...', junction_type: '4-Way' });
     const [junctionType, setJunctionType] = useState(4); // Default 4-way
+    const [zoneCounts, setZoneCounts] = useState({ north: 0, east: 0, south: 0, west: 0 }); // Feature 3
     
     // Sliders
     const [manualEast, setManualEast] = useState(10);
@@ -125,6 +128,8 @@ function App() {
                     
                     if (data.signals) setSignals(data.signals);
                     if (data.algorithm) setAlgorithmInfo(data.algorithm);
+                    // Feature 3: update zone counts from AI analysis
+                    if (data.zone_counts) setZoneCounts(data.zone_counts);
                     if (data.gps && !cameraLocation) {
                         setCameraLocation(data.gps);
                         addLog(`GPS LOCKED: ${data.gps[0].toFixed(4)}, ${data.gps[1].toFixed(4)}`);
@@ -163,13 +168,15 @@ function App() {
                         if (data.level >= 2 && !accidentPos && !hasRoutedRef.current) {
                             const loc = data.gps || cameraLocation;
                             setAccidentPos(loc);
-                            const bestHospital = findNearestHospital(loc);
-                            if (bestHospital) {
-                                getRoute(loc, bestHospital.coords);
-                                addLog(`ROUTING: ${bestHospital.name}`);
-                                speakAlert(`Critical Alert. ${data.title}. Routing to nearest hospital.`);
-                            }
                             hasRoutedRef.current = true;
+                            // async road-distance lookup
+                            findNearestHospital(loc).then(bestHospital => {
+                                if (bestHospital) {
+                                    getRoute(loc, bestHospital.coords);
+                                    addLog(`ROUTING: ${bestHospital.name}`);
+                                    speakAlert(`Critical Alert. ${data.title}. Routing to nearest hospital.`);
+                                }
+                            });
                         }
                     } else if (data.level === 0 && hasRoutedRef.current) {
                         // Optional: Auto-reset routing flag if system goes normal
@@ -243,23 +250,60 @@ function App() {
         } catch (e) { addLog("ERR: Routing Service Unavailable"); }
     }, [addLog]);
 
-    const findNearestHospital = (coords) => {
+    // --- FEATURE 5: Road-distance hospital routing via OSRM table API ---
+    // Replaces Euclidean distance with real driving durations to all hospitals.
+    const findNearestHospital = useCallback(async (coords) => {
         if (!coords) return null;
+
+        // Build coordinate string: incident first, then all hospitals
+        // OSRM table API: /table/v1/driving/{coords}?sources=0&destinations=1;2;3...
+        const allCoords = [coords, ...HOSPITALS.map(h => h.coords)];
+        const coordStr = allCoords.map(c => `${c[1]},${c[0]}`).join(';');
+        const destinations = HOSPITALS.map((_, i) => i + 1).join(';');
+
+        try {
+            const res = await fetch(
+                `https://router.project-osrm.org/table/v1/driving/${coordStr}?sources=0&destinations=${destinations}&annotations=duration`
+            );
+            const data = await res.json();
+
+            if (data.code === 'Ok' && data.durations?.[0]) {
+                const durations = data.durations[0]; // durations from incident to each hospital
+                let minIdx = 0;
+                let minDuration = Infinity;
+                durations.forEach((d, i) => {
+                    if (d !== null && d < minDuration) {
+                        minDuration = d;
+                        minIdx = i;
+                    }
+                });
+                const nearest = HOSPITALS[minIdx];
+                const etaMins = Math.round(minDuration / 60);
+                addLog(`ROUTING (road): Nearest is ${nearest.name} — ${etaMins} min by road`);
+                return nearest;
+            }
+        } catch (e) {
+            addLog("WARN: OSRM table unavailable, falling back to straight-line distance");
+        }
+
+        // Fallback: Euclidean distance if OSRM table call fails
         let nearest = null, minDist = Infinity;
         HOSPITALS.forEach(h => {
             const dist = Math.sqrt(Math.pow(h.coords[0] - coords[0], 2) + Math.pow(h.coords[1] - coords[1], 2));
             if (dist < minDist) { minDist = dist; nearest = h; }
         });
         return nearest;
-    };
+    }, [addLog]);
 
     const handleMapClick = (e) => {
         if (!e.latlng) return;
         const newPos = [e.latlng.lat, e.latlng.lng];
         const startPos = cameraLocation || newPos;
         setAccidentPos(newPos);
-        const best = findNearestHospital(newPos);
-        if(best) getRoute(startPos, best.coords);
+        // async road-distance lookup
+        findNearestHospital(newPos).then(best => {
+            if (best) getRoute(startPos, best.coords);
+        });
         addLog("MANUAL TRIGGER: Simulation Started.");
     };
 
@@ -284,6 +328,42 @@ function App() {
                     {accidentPos && <span className="corridor-badge">GREEN CORRIDOR</span>}
                 </div>
             </header>
+
+            {/* TAB NAVIGATION */}
+            <div style={{ backgroundColor: '#0a0a0a', borderBottom: '2px solid #1a1a1a', display: 'flex', gap: 0 }}>
+                {[
+                    { id: 'live', label: '🚦 Live Command' },
+                    { id: 'analytics', label: '📊 Analytics' },
+                ].map(tab => (
+                    <button
+                        key={tab.id}
+                        onClick={() => setActiveTab(tab.id)}
+                        style={{
+                            padding: '10px 24px',
+                            background: activeTab === tab.id ? '#111' : 'transparent',
+                            color: activeTab === tab.id ? '#00ff00' : '#555',
+                            border: 'none',
+                            borderBottom: activeTab === tab.id ? '2px solid #00ff00' : '2px solid transparent',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            fontFamily: "'Courier New', monospace",
+                            fontWeight: activeTab === tab.id ? 'bold' : 'normal',
+                            letterSpacing: 1,
+                            transition: 'all 0.2s',
+                        }}
+                    >
+                        {tab.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* ANALYTICS TAB */}
+            {activeTab === 'analytics' && (
+                <AnalyticsTab apiUrl={API_URL} />
+            )}
+
+            {/* LIVE TAB CONTENTS */}
+            {activeTab === 'live' && (<>
 
             {/* ALGORITHM & JUNCTION CONTROL PANEL */}
             <div style={{ backgroundColor: '#111', borderBottom: '2px solid #333', padding: '10px', display: 'flex', gap: '20px', justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -332,31 +412,34 @@ function App() {
                     </div>
                     
                     <div className="stats-box">
+                        <div style={{fontSize: '0.65rem', color: '#444', marginBottom: '6px', letterSpacing: 1}}>
+                            LANE VEHICLE COUNT {zoneCounts.east > 0 || zoneCounts.south > 0 ? '(AI ZONES)' : '(MANUAL)'}
+                        </div>
                         <div className="stat-row">
                             <span>NORTH</span>
                             <div className="bar-container"><div className="bar" style={{ width: `${trafficLevel}%`, background: trafficColor }}></div></div>
                             <span>{Math.round(trafficLevel)}% (AI)</span>
                         </div>
-                        {/* Dynamic Rendering for other lanes */}
+                        {/* Dynamic Rendering for other lanes — use zone_counts if multi-zone enabled */}
                         {junctionType >= 3 && (
                             <div className="stat-row">
                                 <span>EAST</span>
-                                <div className="bar-container"><div className="bar" style={{ width: `${getPercent(manualEast)}%`, background: getColor(getPercent(manualEast)) }}></div></div>
-                                <span>{manualEast}</span>
+                                <div className="bar-container"><div className="bar" style={{ width: `${getPercent(zoneCounts.east || manualEast)}%`, background: getColor(getPercent(zoneCounts.east || manualEast)) }}></div></div>
+                                <span style={{color: zoneCounts.east > 0 ? '#00e5ff' : '#aaa'}}>{zoneCounts.east > 0 ? `${zoneCounts.east} AI` : manualEast}</span>
                             </div>
                         )}
-                        {junctionType >= 2 && ( // South is usually the opposite lane in 2-way
+                        {junctionType >= 2 && (
                             <div className="stat-row">
                                 <span>SOUTH</span>
-                                <div className="bar-container"><div className="bar" style={{ width: `${getPercent(manualSouth)}%`, background: getColor(getPercent(manualSouth)) }}></div></div>
-                                <span>{manualSouth}</span>
+                                <div className="bar-container"><div className="bar" style={{ width: `${getPercent(zoneCounts.south || manualSouth)}%`, background: getColor(getPercent(zoneCounts.south || manualSouth)) }}></div></div>
+                                <span style={{color: zoneCounts.south > 0 ? '#00e5ff' : '#aaa'}}>{zoneCounts.south > 0 ? `${zoneCounts.south} AI` : manualSouth}</span>
                             </div>
                         )}
                         {junctionType >= 4 && (
                             <div className="stat-row">
                                 <span>WEST</span>
-                                <div className="bar-container"><div className="bar" style={{ width: `${getPercent(manualWest)}%`, background: getColor(getPercent(manualWest)) }}></div></div>
-                                <span>{manualWest}</span>
+                                <div className="bar-container"><div className="bar" style={{ width: `${getPercent(zoneCounts.west || manualWest)}%`, background: getColor(getPercent(zoneCounts.west || manualWest)) }}></div></div>
+                                <span style={{color: zoneCounts.west > 0 ? '#00e5ff' : '#aaa'}}>{zoneCounts.west > 0 ? `${zoneCounts.west} AI` : manualWest}</span>
                             </div>
                         )}
                     </div>
@@ -551,6 +634,7 @@ function App() {
                     </div>
                 </div>
             </div>
+            </>) /* end activeTab === 'live' */}
         </div>
     );
 }

@@ -4,11 +4,12 @@
   "description": "Smart Intelligent Highways Dashboard - Real-time Traffic Control",
   "private": true,
   "dependencies": {
+    "leaflet": "^1.9.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-scripts": "5.0.1",
     "react-leaflet": "^4.2.1",
-    "leaflet": "^1.9.4",
+    "react-scripts": "5.0.1",
+    "recharts": "^2.12.7",
     "web-vitals": "^2.1.4"
   },
   "scripts": {
