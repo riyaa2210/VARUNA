@@ -48,6 +48,18 @@ except ImportError:
     print("WARNING: signal_algorithms not found. Using basic signal control.")
     SmartSignalController = None
 
+# Import ANPR module (Feature 2)
+try:
+    from anpr import read_plate_from_crop, log_plate, log_incident, get_recent_plates, get_plate_stats, ANPR_AVAILABLE
+except ImportError:
+    print("WARNING: anpr.py not found. ANPR disabled.")
+    ANPR_AVAILABLE = False
+    def read_plate_from_crop(*a, **kw): return None, 0.0
+    def log_plate(*a, **kw): return -1
+    def log_incident(*a, **kw): return -1
+    def get_recent_plates(*a, **kw): return []
+    def get_plate_stats(*a, **kw): return {}
+
 # --- Configuration ---
 # OPTION 1: Live Camera (IP Stream) - ACTIVE
 # Default path for Android IP Webcam / OWLRP stream
@@ -107,6 +119,11 @@ manual_lane_data = {"east": 10, "south": 5, "west": 8}
 incident_lock = False
 last_snapshot_time = 0
 current_algorithm = "adaptive"  # Can be changed via API
+
+# --- Feature 3: Multi-zone vehicle counts (AI-driven for all lanes) ---
+# Updated each frame by quadrant analysis; falls back to manual if single-camera
+zone_vehicle_counts = {"north": 0, "east": 0, "south": 0, "west": 0}
+MULTI_ZONE_ENABLED = True  # Set False to fall back to manual sliders for E/S/W
 
 # --- NEW: Smart Signal Controller ---
 # Initialize with 4-way junction (can be changed via API)
@@ -499,24 +516,34 @@ def handle_alert_background(level, title, message, frame_copy, status):
 
 
 # --- NEW: Smart Signal Decision Logic ---
-def decide_signals_smart(north_ai_count: int) -> dict:
+def decide_signals_smart(north_ai_count: int, zone_counts: dict = None) -> dict:
     """
     Uses the SmartSignalController algorithms instead of basic cycle logic.
-    
+    Feature 3: zone_counts provides AI vehicle counts for all lanes.
+    Falls back to manual_lane_data for lanes without AI counts.
+
     Returns: {'north': 'green', 'east': 'red', ...}
     """
     global signal_controller, manual_lane_data, current_algorithm
-    
+
     if not signal_controller:
         return {}
-        
-    # Update the controller with latest traffic data
-    traffic_data = {
-        'north': north_ai_count,
-        'east': manual_lane_data.get('east', 0),
-        'south': manual_lane_data.get('south', 0),
-        'west': manual_lane_data.get('west', 0)
-    }
+
+    # Feature 3: Use zone counts if available, else manual
+    if zone_counts:
+        traffic_data = {
+            'north': zone_counts.get('north', north_ai_count),
+            'east':  zone_counts.get('east',  manual_lane_data.get('east', 0)),
+            'south': zone_counts.get('south', manual_lane_data.get('south', 0)),
+            'west':  zone_counts.get('west',  manual_lane_data.get('west', 0)),
+        }
+    else:
+        traffic_data = {
+            'north': north_ai_count,
+            'east': manual_lane_data.get('east', 0),
+            'south': manual_lane_data.get('south', 0),
+            'west': manual_lane_data.get('west', 0)
+        }
     signal_controller.update_traffic_data(traffic_data)
 
     # NEW: Apply selected algorithm
@@ -538,6 +565,72 @@ def decide_signals_smart(north_ai_count: int) -> dict:
         signal_status[decision.green_lane] = "green"
 
     return signal_status
+
+
+# --- Feature 3: Frame quadrant splitter for multi-zone AI counting ---
+async def analyze_frame_zones(frame) -> dict:
+    """
+    Split a single wide-angle camera frame into 4 quadrants (N/E/S/W)
+    and run lightweight vehicle counting on each zone independently.
+
+    Layout:
+        ┌─────────┬─────────┐
+        │  NORTH  │  EAST   │
+        │ (top-L) │ (top-R) │
+        ├─────────┼─────────┤
+        │  WEST   │  SOUTH  │
+        │ (bot-L) │ (bot-R) │
+        └─────────┴─────────┘
+
+    Returns dict: {'north': int, 'east': int, 'south': int, 'west': int}
+    Falls back to manual_lane_data if model not loaded or MULTI_ZONE_ENABLED=False.
+    """
+    global model, manual_lane_data
+
+    if not MULTI_ZONE_ENABLED or model is None:
+        return {
+            'north': 0,  # north is always from main detection
+            'east': manual_lane_data.get('east', 0),
+            'south': manual_lane_data.get('south', 0),
+            'west': manual_lane_data.get('west', 0),
+        }
+
+    h, w = frame.shape[:2]
+    mid_h, mid_w = h // 2, w // 2
+
+    # Quadrant crops
+    quadrants = {
+        'north': frame[0:mid_h,    0:mid_w],      # top-left
+        'east':  frame[0:mid_h,    mid_w:w],      # top-right
+        'west':  frame[mid_h:h,    0:mid_w],      # bottom-left
+        'south': frame[mid_h:h,    mid_w:w],      # bottom-right
+    }
+
+    VEHICLE_CLASSES = {"car", "truck", "bus", "vehicle", "motorcycle",
+                       "motorbike", "bike", "bicycle"}
+    counts = {}
+
+    for zone, crop in quadrants.items():
+        if crop.size == 0:
+            counts[zone] = 0
+            continue
+        try:
+            results = await asyncio.to_thread(
+                model.predict, crop, conf=0.25, verbose=False
+            )
+            zone_count = 0
+            for r in results:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0])
+                    name = model.names[cls_id].lower()
+                    if name in VEHICLE_CLASSES:
+                        zone_count += 1
+            counts[zone] = zone_count
+        except Exception as e:
+            logging.warning(f"[ZONE] Error counting zone {zone}: {e}")
+            counts[zone] = manual_lane_data.get(zone, 0)
+
+    return counts
 
 
 # --- ACCURACY FILTER ---
@@ -565,6 +658,8 @@ async def analyze_detections(results, model_names, frame):
     snapshot_frame = None
     detected_objects = []
     max_conf = 0.0
+    # Feature 2: collect plates seen this frame for incident logging
+    plates_this_frame = []
 
     for r in results:
         for box in r.boxes:
@@ -604,6 +699,43 @@ async def analyze_detections(results, model_names, frame):
                 2,
             )
 
+            # --- Feature 2: ANPR on vehicle crops ---
+            VEHICLE_BOX_CLASSES = ["car", "truck", "bus", "motorcycle", "motorbike",
+                                    "bike", "bicycle", "vehicle"]
+            if ANPR_AVAILABLE and name.lower() in VEHICLE_BOX_CLASSES:
+                try:
+                    # Add small padding around the box
+                    pad = 4
+                    fx1 = max(0, x1 - pad)
+                    fy1 = max(0, y1 - pad)
+                    fx2 = min(frame.shape[1], x2 + pad)
+                    fy2 = min(frame.shape[0], y2 + pad)
+                    crop = frame[fy1:fy2, fx1:fx2]
+
+                    plate, plate_conf = await asyncio.to_thread(read_plate_from_crop, crop)
+                    if plate:
+                        plates_this_frame.append(plate)
+                        # Draw plate text on frame
+                        cv2.putText(
+                            frame,
+                            f"[{plate}]",
+                            (x1, y2 + 16),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45,
+                            (0, 229, 255),
+                            2,
+                        )
+                        # Log to SQLite (non-blocking)
+                        incident_ctx = "None"
+                        threading.Thread(
+                            target=log_plate,
+                            args=(plate, plate_conf, incident_ctx, "", CAMERA_LAT, CAMERA_LON),
+                            daemon=True
+                        ).start()
+                        print(f"[ANPR] Plate detected: {plate} ({plate_conf:.0%})")
+                except Exception as e:
+                    print(f"[ANPR] Error processing vehicle crop: {e}")
+
     if len(detected_objects) > 0:
         # Save detected frames for archival evidence
         evidence_subdir = os.path.join(EVIDENCE_DIR, "detected")
@@ -641,8 +773,16 @@ async def analyze_detections(results, model_names, frame):
     
     print(f"[VEHICLE] VEHICLE COUNT: {ai_count} (from {len(detected_objects)} total detections)")
     
+    # --- Feature 3: Multi-zone AI counting for all lanes ---
+    zone_counts = await analyze_frame_zones(frame)
+    zone_counts['north'] = ai_count  # Main detection loop is authoritative for north
+
+    # Update zone counts global for frontend
+    global zone_vehicle_counts
+    zone_vehicle_counts = zone_counts.copy()
+
     # --- Simplified signal logic ---
-    sig_status = decide_signals_smart(ai_count)
+    sig_status = decide_signals_smart(ai_count, zone_counts)
 
     # Ensure all junction lanes are included
     if signal_controller:
@@ -692,6 +832,21 @@ async def analyze_detections(results, model_names, frame):
             t.start()
             snapshot_frame = encode_frame(frame_to_save)
 
+            # Feature 2: log incident + associate plates to it
+            if ANPR_AVAILABLE and plates_this_frame:
+                for plate in plates_this_frame:
+                    threading.Thread(
+                        target=log_plate,
+                        args=(plate, 0.9, stable_stat, "", CAMERA_LAT, CAMERA_LON),
+                        daemon=True
+                    ).start()
+                threading.Thread(
+                    target=log_incident,
+                    args=(stable_stat, "Confirmed", CAMERA_LAT, CAMERA_LON,
+                          plates_this_frame, "", True),
+                    daemon=True
+                ).start()
+
     elif stable_stat == "Normal" and incident_lock:
         if current_time - max(last_alert_timers.values(), default=0) > 10:
             incident_lock = False
@@ -732,9 +887,11 @@ async def analyze_detections(results, model_names, frame):
         "car_count": ai_count,
         "signals": sig_status,
         "manual": manual_lane_data.copy(),
+        "zone_counts": zone_counts,   # Feature 3: AI counts for all lanes
         "gps": [drift_lat, drift_lon],
         "incident_active": incident_lock,
-        "algorithm": algorithm_info
+        "algorithm": algorithm_info,
+        "anpr_enabled": ANPR_AVAILABLE,  # Feature 2: ANPR status for frontend
     }
 
     if incident_lock:
@@ -819,6 +976,17 @@ async def reset():
     return {"status": "reset"}
 
 
+@app.get("/anpr-log")
+async def get_anpr_log(limit: int = 50):
+    """Feature 2: Return recent plate reads from SQLite."""
+    return {
+        "status": "ok",
+        "anpr_enabled": ANPR_AVAILABLE,
+        "plates": get_recent_plates(limit),
+        "stats": get_plate_stats(),
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Check if detection system is ready"""
@@ -830,6 +998,103 @@ async def health_check():
         "camera_url": MOBILE_CAMERA_URL,
         "signal_controller_ready": signal_controller is not None
     }
+
+
+@app.get("/analytics")
+async def get_analytics():
+    """
+    Feature 1: Analytics endpoint.
+    Parses evidence_archive filenames (timestamped) to produce:
+    - incident counts by type
+    - incidents per hour of day
+    - incidents per day (last 7 days)
+    - total detections and confirmation rate
+    """
+    import re
+    from collections import defaultdict
+
+    stats = {
+        "total_detections": 0,
+        "confirmed_accidents": 0,
+        "confirmed_fires": 0,
+        "by_hour": {str(h): 0 for h in range(24)},          # hour -> count
+        "by_day": {},                                          # YYYY-MM-DD -> count
+        "recent_incidents": [],                                # last 10 confirmed incidents
+        "detection_rate_per_hour": {str(h): 0 for h in range(24)},
+    }
+
+    # Pattern: detected_YYYYMMDD_HHMMSS_ffffff.jpg or evidence_YYYYMMDD_HHMMSS_<status>.jpg
+    detect_pattern = re.compile(r'detected_(\d{8})_(\d{6})')
+    evidence_pattern = re.compile(r'evidence_(\d{8})_(\d{6})_(\w+)')
+
+    # --- Count all detections (evidence_archive/detected/) ---
+    detected_dir = os.path.join(EVIDENCE_DIR, "detected")
+    if os.path.exists(detected_dir):
+        for fname in os.listdir(detected_dir):
+            m = detect_pattern.search(fname)
+            if m:
+                stats["total_detections"] += 1
+                date_str = m.group(1)   # YYYYMMDD
+                time_str = m.group(2)   # HHMMSS
+                hour = time_str[:2]
+                day = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                stats["by_hour"][hour] = stats["by_hour"].get(hour, 0) + 1
+                stats["by_day"][day] = stats["by_day"].get(day, 0) + 1
+
+    # --- Count confirmed incidents (severe/ and fire/) ---
+    for subfolder, incident_type in [("severe", "Accident"), ("fire", "Fire")]:
+        folder = os.path.join(EVIDENCE_DIR, subfolder)
+        if not os.path.exists(folder):
+            continue
+        for fname in sorted(os.listdir(folder), reverse=True):
+            m = evidence_pattern.search(fname)
+            if not m:
+                # Try detect pattern for older naming
+                m2 = detect_pattern.search(fname)
+                if m2:
+                    date_str, time_str = m2.group(1), m2.group(2)
+                    status = incident_type
+                else:
+                    continue
+            else:
+                date_str, time_str, status = m.group(1), m.group(2), m.group(3)
+
+            if incident_type == "Accident":
+                stats["confirmed_accidents"] += 1
+            else:
+                stats["confirmed_fires"] += 1
+
+            hour = time_str[:2]
+            day = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            stats["by_hour"][hour] = stats["by_hour"].get(hour, 0) + 1
+            stats["by_day"][day] = stats["by_day"].get(day, 0) + 1
+
+            if len(stats["recent_incidents"]) < 10:
+                stats["recent_incidents"].append({
+                    "type": incident_type,
+                    "date": day,
+                    "time": f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}",
+                    "file": fname
+                })
+
+    # Keep only last 7 days in by_day
+    from datetime import datetime, timedelta
+    today = datetime.now()
+    last7 = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+    stats["by_day"] = {d: stats["by_day"].get(d, 0) for d in last7}
+
+    # Confirmation rate (confirmed / total detections)
+    total_confirmed = stats["confirmed_accidents"] + stats["confirmed_fires"]
+    stats["confirmation_rate"] = round(
+        (total_confirmed / stats["total_detections"] * 100) if stats["total_detections"] > 0 else 0, 1
+    )
+    stats["total_confirmed"] = total_confirmed
+
+    # Feature 2: append ANPR stats
+    stats["anpr"] = get_plate_stats()
+    stats["anpr_enabled"] = ANPR_AVAILABLE
+
+    return stats
 
 
 @app.get("/test-camera")
